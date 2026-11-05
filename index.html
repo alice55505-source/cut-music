@@ -1,0 +1,597 @@
+<meta charset="utf-8">
+<title>頭尾靜音裁切</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one working column — controls strip on top, a stack of file "tracks" below, each track a waveform with its kept region lit. */
+:root {
+  --bg: #f3f5f4;
+  --panel: #ffffff;
+  --ink: #17221f;
+  --muted: #5d6b67;
+  --line: #d6dddb;
+  --wave: #9aa9a5;
+  --keep: #0f7a62;
+  --keep-soft: rgba(15, 122, 98, 0.12);
+  --cut: rgba(23, 34, 31, 0.06);
+  --warn: #a35a00;
+  --focus: #1b6fd1;
+  --font-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111715; --panel: #18201e; --ink: #e5ece9; --muted: #95a39f; --line: #2b3633;
+    --wave: #5f6e6a; --keep: #3fc79f; --keep-soft: rgba(63, 199, 159, 0.14); --cut: rgba(0, 0, 0, 0.25);
+    --warn: #f0a443; --focus: #6aa8ff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111715; --panel: #18201e; --ink: #e5ece9; --muted: #95a39f; --line: #2b3633;
+  --wave: #5f6e6a; --keep: #3fc79f; --keep-soft: rgba(63, 199, 159, 0.14); --cut: rgba(0, 0, 0, 0.25);
+  --warn: #f0a443; --focus: #6aa8ff; color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 48px;
+}
+.wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 20px; }
+header { display: grid; gap: 4px; }
+h1 { font-size: 1.6rem; margin: 0; font-weight: 700; letter-spacing: 0.02em; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 62ch; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.drop {
+  border: 1.5px dashed var(--line); border-radius: 10px; background: var(--panel);
+  padding: 22px 16px; text-align: center; cursor: pointer; display: grid; gap: 6px; justify-items: center;
+}
+.drop.over { border-color: var(--keep); background: var(--keep-soft); }
+.drop strong { font-size: 1.05rem; }
+.drop span { color: var(--muted); font-size: 0.9rem; }
+
+.settings {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 18px;
+}
+.field { display: grid; gap: 4px; min-width: 0; }
+.field label { font-size: 0.82rem; color: var(--muted); letter-spacing: 0.04em; display: flex; justify-content: space-between; gap: 8px; }
+.field label output { color: var(--ink); font-family: var(--font-mono); }
+.field small { color: var(--muted); font-size: 0.78rem; line-height: 1.4; }
+input[type="range"] { width: 100%; accent-color: var(--keep); }
+select, input[type="number"] {
+  font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; width: 100%;
+}
+.check { display: flex; align-items: center; gap: 8px; font-size: 0.92rem; }
+.check input { accent-color: var(--keep); width: 16px; height: 16px; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
+.bar .summary { color: var(--muted); font-size: 0.9rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+  font: inherit; font-size: 0.9rem; border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--keep); border-color: var(--keep); color: var(--panel); font-weight: 500; }
+button:disabled { opacity: 0.5; cursor: default; }
+button:focus-visible, select:focus-visible, input:focus-visible, .drop:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.list { display: grid; gap: 12px; }
+.empty { color: var(--muted); text-align: center; padding: 24px 0; }
+.track { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; min-width: 0; }
+.track-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; justify-content: space-between; }
+.track-name { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+.chip { font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); margin-left: 6px; }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.chip.sample { color: var(--focus); border-color: var(--focus); }
+.stats { font-size: 0.85rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.stats b { color: var(--ink); font-weight: 500; }
+canvas { width: 100%; height: 72px; display: block; border-radius: 6px; background: var(--bg); cursor: crosshair; }
+.track-foot { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; }
+.manual { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.85rem; color: var(--muted); }
+.manual input { width: 92px; padding: 3px 6px; font-family: var(--font-mono); font-size: 0.85rem; }
+.hint { font-size: 0.8rem; color: var(--muted); }
+.toast { min-height: 1.4em; font-size: 0.88rem; color: var(--keep); }
+.toast.err { color: var(--warn); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>頭尾靜音裁切</h1>
+    <p>一次拖入多個音訊，自動找出第一句和最後一句人聲，把前後沒聲音的部分剪掉，再批次下載。檔案只在你的瀏覽器裡處理，不會上傳。</p>
+  </header>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-label="選擇音訊檔">
+    <strong>拖曳音訊到這裡，或點一下選擇檔案</strong>
+    <span>支援 MP3、WAV、M4A、AAC、OGG、FLAC，以及 MP4 影片的聲音，可一次選多個</span>
+    <input type="file" id="fileInput" accept="audio/*,video/mp4,.m4a,.flac,.ogg,.opus" multiple hidden>
+  </div>
+
+  <section class="settings" aria-label="裁切設定">
+    <div class="field">
+      <label for="thr">人聲門檻 <output id="thrOut" class="num">-40 dB</output></label>
+      <input type="range" id="thr" min="-70" max="-15" step="1" value="-40">
+      <small>環境噪音大就往右調；人聲小聲被剪到就往左調。</small>
+    </div>
+    <div class="field">
+      <label for="minVoice">最短人聲 <output id="minVoiceOut" class="num">150 ms</output></label>
+      <input type="range" id="minVoice" min="20" max="600" step="10" value="150">
+      <small>比這更短的聲音（咳嗽、點擊聲）不算開頭。</small>
+    </div>
+    <div class="field">
+      <label for="padHead">開頭保留 <output id="padHeadOut" class="num">0.20 s</output></label>
+      <input type="range" id="padHead" min="0" max="2" step="0.05" value="0.2">
+      <small>第一句前面留一點空白，避免太突然。</small>
+    </div>
+    <div class="field">
+      <label for="padTail">結尾保留 <output id="padTailOut" class="num">0.40 s</output></label>
+      <input type="range" id="padTail" min="0" max="3" step="0.05" value="0.4">
+      <small>保留尾音和殘響。</small>
+    </div>
+    <div class="field">
+      <label for="fmt">輸出格式</label>
+      <select id="fmt">
+        <option value="wav">WAV（無損）</option>
+        <option value="mp3">MP3</option>
+      </select>
+      <select id="kbps" aria-label="MP3 位元率" hidden>
+        <option value="128">MP3 128 kbps</option>
+        <option value="192" selected>MP3 192 kbps</option>
+        <option value="320">MP3 320 kbps</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>偵測方式</label>
+      <span class="check"><input type="checkbox" id="voiceBand" checked><label for="voiceBand" style="all:unset">只看人聲頻段</label></span>
+      <span class="check"><input type="checkbox" id="fade" checked><label for="fade" style="all:unset">頭尾加 15 ms 淡入淡出</label></span>
+    </div>
+  </section>
+
+  <div class="bar">
+    <div class="summary" id="summary">尚未加入檔案</div>
+    <div class="actions">
+      <button id="clearAll" type="button">清空</button>
+      <button id="dlAll" type="button" class="primary">全部下載（ZIP）</button>
+    </div>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <div class="list" id="list"></div>
+  <p class="hint">波形上亮色區塊是保留的部分。點波形左半邊設定開頭、右半邊設定結尾，也可以直接輸入秒數微調。</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const FRAME_SEC = 0.01;
+  let ctx = null;
+  const getCtx = () => (ctx ||= new (window.AudioContext || window.webkitAudioContext)());
+  const items = [];
+  let uid = 0;
+  let playing = null;
+
+  const settings = () => ({
+    thr: +$("thr").value,
+    minVoice: +$("minVoice").value / 1000,
+    padHead: +$("padHead").value,
+    padTail: +$("padTail").value,
+    voiceBand: $("voiceBand").checked,
+    fade: $("fade").checked,
+    fmt: $("fmt").value,
+    kbps: +$("kbps").value,
+  });
+
+  const fmtTime = (s) => {
+    if (!isFinite(s)) return "-";
+    const m = Math.floor(s / 60);
+    const r = s - m * 60;
+    return m ? `${m}:${r.toFixed(2).padStart(5, "0")}` : `${r.toFixed(2)} s`;
+  };
+  const toast = (msg, err) => { const t = $("toast"); t.textContent = msg; t.classList.toggle("err", !!err); };
+
+  // ---------- analysis ----------
+  async function envelope(buffer, voiceBand) {
+    const sr = buffer.sampleRate, len = buffer.length;
+    let mono;
+    if (voiceBand) {
+      const off = new OfflineAudioContext(1, len, sr);
+      const src = off.createBufferSource();
+      src.buffer = buffer;
+      const hp = off.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 150;
+      const lp = off.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 4000;
+      src.connect(hp).connect(lp).connect(off.destination);
+      src.start();
+      mono = (await off.startRendering()).getChannelData(0);
+    } else {
+      mono = new Float32Array(len);
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        const d = buffer.getChannelData(c);
+        for (let i = 0; i < len; i++) mono[i] += d[i] / buffer.numberOfChannels;
+      }
+    }
+    const hop = Math.max(1, Math.round(sr * FRAME_SEC));
+    const n = Math.ceil(len / hop);
+    const db = new Float32Array(n);
+    for (let f = 0; f < n; f++) {
+      let sum = 0; const a = f * hop, b = Math.min(len, a + hop);
+      for (let i = a; i < b; i++) sum += mono[i] * mono[i];
+      db[f] = 10 * Math.log10(sum / (b - a) + 1e-12);
+    }
+    return db;
+  }
+
+  function detect(db, duration, s) {
+    const need = Math.max(1, Math.round(s.minVoice / FRAME_SEC));
+    const n = db.length;
+    let start = -1, end = -1, run = 0;
+    for (let f = 0; f < n; f++) {
+      run = db[f] > s.thr ? run + 1 : 0;
+      if (run >= need) { start = f - need + 1; break; }
+    }
+    run = 0;
+    for (let f = n - 1; f >= 0; f--) {
+      run = db[f] > s.thr ? run + 1 : 0;
+      if (run >= need) { end = f + need; break; }
+    }
+    if (start < 0 || end <= start) return { start: 0, end: duration, found: false };
+    return {
+      start: Math.max(0, start * FRAME_SEC - s.padHead),
+      end: Math.min(duration, end * FRAME_SEC + s.padTail),
+      found: true,
+    };
+  }
+
+  async function analyze(item) {
+    const s = settings();
+    const key = s.voiceBand ? "band" : "full";
+    if (!item.env[key]) item.env[key] = await envelope(item.buffer, s.voiceBand);
+    const r = detect(item.env[key], item.buffer.duration, s);
+    item.auto = r;
+    if (!item.manual) { item.start = r.start; item.end = r.end; }
+  }
+
+  // ---------- rendering ----------
+  function peaks(item, w) {
+    const d = item.buffer.getChannelData(0);
+    const d2 = item.buffer.numberOfChannels > 1 ? item.buffer.getChannelData(1) : d;
+    const step = d.length / w, out = new Float32Array(w * 2);
+    for (let x = 0; x < w; x++) {
+      let mn = 0, mx = 0;
+      const a = Math.floor(x * step), b = Math.min(d.length, Math.floor((x + 1) * step));
+      const stride = Math.max(1, Math.floor((b - a) / 400));
+      for (let i = a; i < b; i += stride) {
+        const v = (d[i] + d2[i]) / 2;
+        if (v < mn) mn = v; if (v > mx) mx = v;
+      }
+      out[x * 2] = mn; out[x * 2 + 1] = mx;
+    }
+    return out;
+  }
+
+  function draw(item) {
+    const cv = item.el.querySelector("canvas");
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(100, Math.round(cv.clientWidth * dpr)), h = Math.round(72 * dpr);
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    if (!item.peaks || item.peaks.length !== w * 2) item.peaks = peaks(item, w);
+    const css = getComputedStyle(document.documentElement);
+    const g = cv.getContext("2d");
+    const dur = item.buffer.duration;
+    const x0 = (item.start / dur) * w, x1 = (item.end / dur) * w;
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = css.getPropertyValue("--keep-soft");
+    g.fillRect(x0, 0, x1 - x0, h);
+    const mid = h / 2;
+    for (let x = 0; x < w; x++) {
+      g.fillStyle = x >= x0 && x <= x1 ? css.getPropertyValue("--keep") : css.getPropertyValue("--wave");
+      const mn = item.peaks[x * 2], mx = item.peaks[x * 2 + 1];
+      const y0 = mid - mx * mid * 0.95, y1 = mid - mn * mid * 0.95;
+      g.fillRect(x, y0, 1, Math.max(1, y1 - y0));
+    }
+    g.fillStyle = css.getPropertyValue("--cut");
+    g.fillRect(0, 0, x0, h); g.fillRect(x1, 0, w - x1, h);
+    g.fillStyle = css.getPropertyValue("--keep");
+    g.fillRect(x0 - dpr, 0, 2 * dpr, h); g.fillRect(x1 - dpr, 0, 2 * dpr, h);
+  }
+
+  function updateItem(item) {
+    const el = item.el, dur = item.buffer.duration;
+    const kept = item.end - item.start;
+    el.querySelector(".stats").innerHTML =
+      `<span>原長 <b class="num">${fmtTime(dur)}</b></span>` +
+      `<span>剪掉開頭 <b class="num">${fmtTime(item.start)}</b></span>` +
+      `<span>剪掉結尾 <b class="num">${fmtTime(dur - item.end)}</b></span>` +
+      `<span>輸出 <b class="num">${fmtTime(kept)}</b></span>`;
+    const chips = [];
+    if (item.sample) chips.push('<span class="chip sample">範例</span>');
+    if (!item.auto.found) chips.push('<span class="chip warn">沒偵測到人聲，保留整段</span>');
+    if (item.manual) chips.push('<span class="chip">手動調整</span>');
+    el.querySelector(".chips").innerHTML = chips.join("");
+    el.querySelector(".in-start").value = item.start.toFixed(2);
+    el.querySelector(".in-end").value = item.end.toFixed(2);
+    draw(item);
+  }
+
+  function updateSummary() {
+    const n = items.length;
+    $("dlAll").disabled = n === 0;
+    $("clearAll").disabled = n === 0;
+    if (!n) { $("summary").textContent = "尚未加入檔案"; $("list").innerHTML = '<div class="empty">還沒有檔案。把音訊拖到上方的框裡就會開始分析。</div>'; return; }
+    const saved = items.reduce((a, it) => a + it.buffer.duration - (it.end - it.start), 0);
+    $("summary").innerHTML = `${n} 個檔案，共剪掉 <span class="num">${fmtTime(saved)}</span>`;
+  }
+
+  function buildEl(item) {
+    const el = document.createElement("article");
+    el.className = "track";
+    el.innerHTML = `
+      <div class="track-head">
+        <div class="track-name"></div>
+        <div class="stats"></div>
+      </div>
+      <canvas aria-label="波形"></canvas>
+      <div class="track-foot">
+        <div class="manual">
+          <label>開始 <input type="number" class="in-start num" step="0.05" min="0"></label>
+          <label>結束 <input type="number" class="in-end num" step="0.05" min="0"></label>
+          <button type="button" class="b-reset">回到自動</button>
+        </div>
+        <div class="actions">
+          <button type="button" class="b-head">聽開頭</button>
+          <button type="button" class="b-tail">聽結尾</button>
+          <button type="button" class="b-dl">下載</button>
+          <button type="button" class="b-rm">移除</button>
+        </div>
+      </div>`;
+    const name = el.querySelector(".track-name");
+    name.textContent = item.name;
+    const chips = document.createElement("span"); chips.className = "chips"; name.append(chips);
+    item.el = el;
+
+    const setManual = (st, en) => {
+      const dur = item.buffer.duration;
+      st = Math.max(0, Math.min(st, dur)); en = Math.max(0, Math.min(en, dur));
+      if (en - st < 0.05) return updateItem(item);
+      item.start = st; item.end = en; item.manual = true;
+      updateItem(item); updateSummary();
+    };
+    el.querySelector(".in-start").addEventListener("change", (e) => setManual(+e.target.value, item.end));
+    el.querySelector(".in-end").addEventListener("change", (e) => setManual(item.start, +e.target.value));
+    el.querySelector("canvas").addEventListener("click", (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      const t = ((e.clientX - r.left) / r.width) * item.buffer.duration;
+      const mid = (item.start + item.end) / 2;
+      t < mid ? setManual(t, item.end) : setManual(item.start, t);
+    });
+    el.querySelector(".b-reset").addEventListener("click", () => {
+      item.manual = false; item.start = item.auto.start; item.end = item.auto.end; updateItem(item); updateSummary();
+    });
+    el.querySelector(".b-head").addEventListener("click", (e) => play(item, item.start, Math.min(item.end, item.start + 4), e.currentTarget));
+    el.querySelector(".b-tail").addEventListener("click", (e) => play(item, Math.max(item.start, item.end - 4), item.end, e.currentTarget));
+    el.querySelector(".b-dl").addEventListener("click", () => downloadOne(item));
+    el.querySelector(".b-rm").addEventListener("click", () => {
+      stop(); items.splice(items.indexOf(item), 1); el.remove(); updateSummary();
+    });
+    return el;
+  }
+
+  // ---------- playback ----------
+  function stop() {
+    if (playing) { try { playing.src.stop(); } catch {} playing.btn.textContent = playing.label; playing = null; }
+  }
+  function play(item, from, to, btn) {
+    const wasSame = playing && playing.btn === btn;
+    stop();
+    if (wasSame) return;
+    const c = getCtx(); c.resume();
+    const src = c.createBufferSource();
+    src.buffer = trimmedBuffer(item, from, to);
+    src.connect(c.destination);
+    src.start();
+    const label = btn.textContent;
+    btn.textContent = "停止";
+    playing = { src, btn, label };
+    src.onended = () => { if (playing && playing.src === src) stop(); };
+  }
+
+  // ---------- output ----------
+  function trimmedBuffer(item, from = item.start, to = item.end, fade = settings().fade) {
+    const b = item.buffer, sr = b.sampleRate;
+    const a = Math.floor(from * sr), z = Math.max(a + 1, Math.floor(to * sr));
+    const out = new AudioBuffer({ length: z - a, numberOfChannels: b.numberOfChannels, sampleRate: sr });
+    const fl = fade ? Math.min(Math.round(sr * 0.015), Math.floor((z - a) / 2)) : 0;
+    for (let c = 0; c < b.numberOfChannels; c++) {
+      const d = b.getChannelData(c).slice(a, z);
+      for (let i = 0; i < fl; i++) { const g = i / fl; d[i] *= g; d[d.length - 1 - i] *= g; }
+      out.copyToChannel(d, c);
+    }
+    return out;
+  }
+
+  function encodeWav(buf) {
+    const ch = buf.numberOfChannels, sr = buf.sampleRate, n = buf.length;
+    const ab = new ArrayBuffer(44 + n * ch * 2), v = new DataView(ab);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + n * ch * 2, true); w(8, "WAVE"); w(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * ch * 2, true); v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true);
+    w(36, "data"); v.setUint32(40, n * ch * 2, true);
+    const chans = Array.from({ length: ch }, (_, c) => buf.getChannelData(c));
+    let o = 44;
+    for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+      const s = Math.max(-1, Math.min(1, chans[c][i]));
+      v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true); o += 2;
+    }
+    return new Blob([ab], { type: "audio/wav" });
+  }
+
+  const toInt16 = (f) => { const o = new Int16Array(f.length); for (let i = 0; i < f.length; i++) { const s = Math.max(-1, Math.min(1, f[i])); o[i] = s < 0 ? s * 0x8000 : s * 0x7fff; } return o; };
+  async function encodeMp3(buf, kbps) {
+    if (!window.lamejs) throw new Error("MP3 編碼器沒有載入（需要網路），請改用 WAV。");
+    const ch = Math.min(2, buf.numberOfChannels);
+    const enc = new lamejs.Mp3Encoder(ch, buf.sampleRate, kbps);
+    const L = toInt16(buf.getChannelData(0)), R = ch > 1 ? toInt16(buf.getChannelData(1)) : null;
+    const parts = [], block = 1152;
+    for (let i = 0; i < L.length; i += block) {
+      const mp3 = ch > 1 ? enc.encodeBuffer(L.subarray(i, i + block), R.subarray(i, i + block)) : enc.encodeBuffer(L.subarray(i, i + block));
+      if (mp3.length) parts.push(new Uint8Array(mp3));
+      if (i % (block * 400) === 0) await new Promise((r) => setTimeout(r));
+    }
+    const end = enc.flush(); if (end.length) parts.push(new Uint8Array(end));
+    return new Blob(parts, { type: "audio/mpeg" });
+  }
+
+  async function render(item) {
+    const s = settings();
+    const buf = trimmedBuffer(item);
+    const base = item.name.replace(/\.[^.]+$/, "");
+    if (s.fmt === "mp3") return { name: `${base}_trim.mp3`, blob: await encodeMp3(buf, s.kbps) };
+    return { name: `${base}_trim.wav`, blob: encodeWav(buf) };
+  }
+
+  // Inside claude.ai the page saves through the viewer's download prompt (zip only);
+  // opened as a normal web page it uses a regular download link.
+  let downloadsCap;
+  const capReady = (async () => {
+    try { downloadsCap = window.claude?.use ? await window.claude.use("downloads") : null; } catch { downloadsCap = null; }
+  })();
+  const inSandbox = !!window.claude;
+
+  async function zipOf(files) {
+    if (!window.JSZip) throw new Error("ZIP 工具沒有載入（需要網路）。");
+    const z = new JSZip();
+    const used = new Set();
+    for (const f of files) {
+      let n = f.name, k = 2;
+      while (used.has(n)) n = f.name.replace(/(\.[^.]+)$/, `_${k++}$1`);
+      used.add(n); z.file(n, f.blob);
+    }
+    return z.generateAsync({ type: "blob", compression: "STORE" });
+  }
+
+  async function save(name, blob) {
+    if (inSandbox) {
+      await capReady;
+      if (!downloadsCap) throw new Error("這個檢視環境不允許下載檔案。請把 index.html 存到電腦，用瀏覽器直接開啟。");
+      if (!/\.zip$/i.test(name)) { blob = await zipOf([{ name, blob }]); name = name.replace(/\.[^.]+$/, ".zip"); }
+      try { await downloadsCap.save({ filename: name, data: blob }); }
+      catch (e) { if (e && e.code === "declined") return false; throw new Error(e?.message || "下載失敗"); }
+      return true;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    return true;
+  }
+
+  async function downloadOne(item) {
+    try {
+      toast(`正在輸出 ${item.name}…`);
+      const f = await render(item);
+      const ok = await save(f.name, f.blob);
+      toast(ok ? `已輸出 ${f.name}` : "已取消下載");
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function downloadAll() {
+    if (!items.length) return;
+    const btn = $("dlAll"); btn.disabled = true;
+    try {
+      const files = [];
+      for (let i = 0; i < items.length; i++) {
+        toast(`正在輸出 ${i + 1} / ${items.length}：${items[i].name}`);
+        files.push(await render(items[i]));
+        await new Promise((r) => setTimeout(r));
+      }
+      toast("正在打包 ZIP…");
+      const zip = await zipOf(files);
+      const ok = await save("trimmed_audio.zip", zip);
+      toast(ok ? `已輸出 ${files.length} 個檔案（trimmed_audio.zip）` : "已取消下載");
+    } catch (e) { toast(e.message, true); }
+    btn.disabled = false;
+  }
+
+  // ---------- input ----------
+  async function addFiles(fileList) {
+    const files = [...fileList];
+    if (!files.length) return;
+    items.filter((it) => it.sample).forEach((it) => { items.splice(items.indexOf(it), 1); it.el.remove(); });
+    const list = $("list");
+    if (!items.length) list.innerHTML = "";
+    let fail = 0;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      toast(`分析中 ${i + 1} / ${files.length}：${f.name}`);
+      try {
+        const buffer = await getCtx().decodeAudioData(await f.arrayBuffer());
+        const item = { id: ++uid, name: f.name, buffer, env: {}, manual: false };
+        await analyze(item);
+        items.push(item);
+        list.append(buildEl(item));
+        updateItem(item); updateSummary();
+      } catch (e) { fail++; console.error(e); }
+    }
+    toast(fail ? `完成，有 ${fail} 個檔案無法讀取（格式不支援或檔案損壞）` : `已分析 ${files.length} 個檔案`, !!fail);
+    updateSummary();
+  }
+
+  const drop = $("drop"), input = $("fileInput");
+  drop.addEventListener("click", () => input.click());
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+  input.addEventListener("change", () => { addFiles(input.files); input.value = ""; });
+  ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
+  document.addEventListener("dragover", (e) => e.preventDefault());
+  document.addEventListener("drop", (e) => { if (!drop.contains(e.target)) { e.preventDefault(); addFiles(e.dataTransfer.files); } });
+
+  // ---------- settings ----------
+  const outs = { thr: (v) => `${v} dB`, minVoice: (v) => `${v} ms`, padHead: (v) => `${(+v).toFixed(2)} s`, padTail: (v) => `${(+v).toFixed(2)} s` };
+  let reTimer;
+  const reanalyze = () => {
+    clearTimeout(reTimer);
+    reTimer = setTimeout(async () => { for (const it of items) { await analyze(it); updateItem(it); } updateSummary(); }, 120);
+  };
+  Object.keys(outs).forEach((id) => $(id).addEventListener("input", () => { $(id + "Out").textContent = outs[id]($(id).value); reanalyze(); }));
+  $("voiceBand").addEventListener("change", reanalyze);
+  $("fmt").addEventListener("change", () => { $("kbps").hidden = $("fmt").value !== "mp3"; });
+  $("dlAll").addEventListener("click", downloadAll);
+  $("clearAll").addEventListener("click", () => { stop(); items.length = 0; updateSummary(); toast(""); });
+  let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => items.forEach(draw), 150); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => items.forEach(draw));
+  new MutationObserver(() => items.forEach(draw)).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  // ---------- example so the first view shows what the tool does ----------
+  async function addSample() {
+    const sr = 44100, dur = 9;
+    const b = new AudioBuffer({ length: sr * dur, numberOfChannels: 1, sampleRate: sr });
+    const d = b.getChannelData(0);
+    let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+    for (let i = 0; i < d.length; i++) d[i] = rnd() * 0.002;
+    const words = [[2.1, 2.6], [2.75, 3.3], [3.5, 4.4], [4.9, 5.5], [5.65, 6.4]];
+    for (const [a, z] of words) {
+      for (let i = Math.floor(a * sr); i < z * sr; i++) {
+        const t = i / sr, p = (t - a) / (z - a), env = Math.sin(Math.PI * p);
+        const f0 = 140 + 30 * Math.sin(t * 3);
+        d[i] += env * 0.35 * (Math.sin(2 * Math.PI * f0 * t) * 0.6 + Math.sin(2 * Math.PI * f0 * 2.1 * t) * 0.25 + Math.sin(2 * Math.PI * f0 * 4.3 * t) * 0.15);
+      }
+    }
+    const item = { id: ++uid, name: "範例－主日報告錄音.wav", buffer: b, env: {}, manual: false, sample: true };
+    await analyze(item);
+    items.push(item);
+    $("list").innerHTML = "";
+    $("list").append(buildEl(item));
+    updateItem(item); updateSummary();
+  }
+  addSample().catch(() => updateSummary());
+})();
+</script>
